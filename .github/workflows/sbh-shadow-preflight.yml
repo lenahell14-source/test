@@ -32,6 +32,9 @@ jobs:
           printf 'KEEP PROTECTED\n' > .sbh-ci/fixtures/protected/data.txt
           touch .sbh-ci/fixtures/protected/.sbh-protect
           printf 'SYNTHETIC CACHE ONLY\n' > .sbh-ci/fixtures/cache/temp.txt
+          printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > .sbh-ci/fixtures/cache/CACHEDIR.TAG
+          touch -d '14 days ago' .sbh-ci/fixtures/cache/temp.txt .sbh-ci/fixtures/cache/CACHEDIR.TAG .sbh-ci/fixtures/cache
+          echo 'FIXTURE_AGE=14d; CACHEDIR.TAG=present'
           printf 'KEEP GIT\n' > .sbh-ci/fixtures/source/.git/config
           ln -s protected .sbh-ci/fixtures/protected-alias
           cat > .sbh-ci/config.toml <<'TOML'
@@ -45,6 +48,7 @@ jobs:
           cross_devices = false
           follow_symlinks = false
           dry_run = true
+          min_file_age_minutes = 5
           [ballast]
           auto_provision = false
           file_count = 1
@@ -112,4 +116,8 @@ jobs:
             echo "FAIL: write-intent open targeted fixture"; exit 1
           fi
           echo "Fixture tree and file content unchanged. No traced mutation on fixtures."
+          if ! grep -Eq '(/fixtures/cache|maintenance keep: /fixtures/cache)' .sbh-ci/daemon.log; then
+            echo "FAIL: no evidence that aged synthetic cache was evaluated"; exit 1
+          fi
+          echo "Aged synthetic cache appeared in daemon scan output; this does not prove it was eligible for deletion."
           echo "NOTE: daemon internal state/log writes under ephemeral /tmp are permitted."
