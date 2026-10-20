@@ -47,7 +47,7 @@ jobs:
           dry_run = true
           [ballast]
           auto_provision = false
-          file_count = 0
+          file_count = 1
           file_size_bytes = 1048576
           [policy]
           initial_mode = "observe"
