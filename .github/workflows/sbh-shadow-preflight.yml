@@ -1,0 +1,44 @@
+name: SBH isolated preflight (no cleanup)
+on:
+  push:
+    branches: [sbh-shadow-test-20261020]
+    paths: ['.github/workflows/sbh-shadow-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pinned-build-and-sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout immutable SBH source (no credentials)
+        uses: actions/checkout@v4
+        with:
+          repository: Dicklesworthstone/storage_ballast_helper
+          ref: 3594971588e2c22eeafd729a14f681a34f5aedef
+          persist-credentials: false
+      - name: Check pinned identity and lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3594971588e2c22eeafd729a14f681a34f5aedef"
+          test -f Cargo.lock
+      - name: Build from locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --bin sbh
+          test -x target/release/sbh
+      - name: Check isolated container start only
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 64 --memory 512m --cpus 1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m \
+            --mount "type=bind,src=$PWD/target/release/sbh,dst=/usr/local/bin/sbh,readonly" \
+            --entrypoint /usr/local/bin/sbh ubuntu:24.04 --help
+      - name: State clearly what was not tested
+        run: |
+          echo "PREFLIGHT ONLY: no daemon Observe, no ballast, no cleanup, no syscall trace."
+          echo "No automatic cleanup is authorized."
