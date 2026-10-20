@@ -116,10 +116,10 @@ jobs:
             echo "FAIL: write-intent open targeted fixture"; exit 1
           fi
           echo "Fixture tree and file content unchanged. No traced mutation on fixtures."
-          if ! grep -Eq 'priority pre-scan dispatched [1-9][0-9]*/[1-9][0-9]* candidates \\(cache×' .sbh-ci/daemon.log; then
+          if ! grep -Eq 'priority pre-scan dispatched [1-9][0-9]*/[1-9][0-9]* candidates \(cache×' .sbh-ci/daemon.log; then
             echo "FAIL: no synthetic cache candidate dispatched to policy"; exit 1
           fi
-          if ! grep -Eq '\\[SBH-EXECUTOR\\] policy rejected [1-9][0-9]*/[1-9][0-9]* candidates \\(mode=observe\\)' .sbh-ci/daemon.log; then
+          if ! grep -Eq '\[SBH-EXECUTOR\] policy rejected [1-9][0-9]*/[1-9][0-9]* candidates \(mode=observe\)' .sbh-ci/daemon.log; then
             echo "FAIL: no evidence that Observe rejected deletion candidates"; exit 1
           fi
           echo "PASS: scanner proposed cache candidate, Observe rejected it, and fixtures were unchanged."
