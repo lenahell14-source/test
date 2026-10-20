@@ -48,7 +48,7 @@ jobs:
           cross_devices = false
           follow_symlinks = false
           dry_run = true
-          min_file_age_minutes = 5
+          min_file_age_minutes = 0
           [ballast]
           auto_provision = false
           file_count = 1
@@ -119,5 +119,11 @@ jobs:
           if ! grep -Eq '(/fixtures/cache|maintenance keep: /fixtures/cache)' .sbh-ci/daemon.log; then
             echo "FAIL: no evidence that aged synthetic cache was evaluated"; exit 1
           fi
-          echo "Aged synthetic cache appeared in daemon scan output; this does not prove it was eligible for deletion."
+          if grep -E 'maintenance keep: /fixtures/cache .*vetoed=true' .sbh-ci/daemon.log; then
+            echo "FAIL: cache was vetoed; Observe deletion gate was not exercised"; exit 1
+          fi
+          if ! grep -Eq '(/fixtures/cache .*vetoed=false|/fixtures/cache .*action=Delete|/fixtures/cache .*action=Review)' .sbh-ci/daemon.log; then
+            echo "FAIL: no non-vetoed candidate evidence; remain inconclusive"; exit 1
+          fi
+          echo "Cache evaluated without hard veto, filesystem untouched; check policy decisions in log."
           echo "NOTE: daemon internal state/log writes under ephemeral /tmp are permitted."
