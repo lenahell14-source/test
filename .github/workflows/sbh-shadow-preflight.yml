@@ -1,4 +1,4 @@
-name: SBH isolated preflight (no cleanup)
+name: SBH isolated Observe trace (no cleanup)
 on:
   push:
     branches: [sbh-shadow-test-20261020]
@@ -7,38 +7,109 @@ on:
 permissions:
   contents: read
 jobs:
-  pinned-build-and-sandbox:
+  observe-trace:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
-      - name: Checkout immutable SBH source (no credentials)
+      - name: Checkout exact upstream commit without credentials
         uses: actions/checkout@v4
         with:
           repository: Dicklesworthstone/storage_ballast_helper
           ref: 3594971588e2c22eeafd729a14f681a34f5aedef
           persist-credentials: false
-      - name: Check pinned identity and lockfile
+      - name: Verify provenance and build
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3594971588e2c22eeafd729a14f681a34f5aedef"
-          test -f Cargo.lock
-      - name: Build from locked dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --release --bin sbh
+          test "$(git rev-parse HEAD)" = '3594971588e2c22eeafd729a14f681a34f5aedef'
+          cargo build --release --locked --bin sbh
           test -x target/release/sbh
-      - name: Check isolated container start only
+      - name: Prepare disposable fixtures and strict Observe configuration
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --cap-drop ALL \
-            --security-opt no-new-privileges --pids-limit 64 --memory 512m --cpus 1 \
-            --tmpfs /tmp:rw,nosuid,nodev,size=16m \
-            --mount "type=bind,src=$PWD/target/release/sbh,dst=/usr/local/bin/sbh,readonly" \
-            --entrypoint /usr/local/bin/sbh ubuntu:24.04 --help
-      - name: State clearly what was not tested
+          mkdir -p .sbh-ci/fixtures/protected .sbh-ci/fixtures/cache .sbh-ci/fixtures/source/.git .sbh-ci/out
+          printf 'KEEP PROTECTED\n' > .sbh-ci/fixtures/protected/data.txt
+          touch .sbh-ci/fixtures/protected/.sbh-protect
+          printf 'SYNTHETIC CACHE ONLY\n' > .sbh-ci/fixtures/cache/temp.txt
+          printf 'KEEP GIT\n' > .sbh-ci/fixtures/source/.git/config
+          ln -s protected .sbh-ci/fixtures/protected-alias
+          cat > .sbh-ci/config.toml <<'TOML'
+          [core]
+          strict_config = true
+          control_socket_enabled = false
+          [scanner]
+          root_paths = ["/fixtures"]
+          protected_paths = ["/fixtures/protected", "/fixtures/source"]
+          include_user_temp_dir = false
+          cross_devices = false
+          follow_symlinks = false
+          dry_run = true
+          [ballast]
+          auto_provision = false
+          file_count = 0
+          file_size_bytes = 1048576
+          [policy]
+          initial_mode = "observe"
+          auto_recover_to = "none"
+          [paths]
+          config_file = "/config/config.toml"
+          state_file = "/tmp/sbh/state.json"
+          sqlite_db = "/tmp/sbh/activity.sqlite3"
+          jsonl_log = "/tmp/sbh/activity.jsonl"
+          ballast_dir = "/tmp/sbh/ballast"
+          TOML
+          chmod -R a+rX .sbh-ci/fixtures .sbh-ci/config.toml
+          chmod 777 .sbh-ci/out
+          find .sbh-ci/fixtures -printf '%P|%y|%l\n' | LC_ALL=C sort > .sbh-ci/before-tree.txt
+          find .sbh-ci/fixtures -type f -print0 | sort -z | xargs -0 sha256sum > .sbh-ci/before-hashes.txt
+      - name: Build temporary container with strace
+        shell: bash
         run: |
-          echo "PREFLIGHT ONLY: no daemon Observe, no ballast, no cleanup, no syscall trace."
-          echo "No automatic cleanup is authorized."
+          set -euo pipefail
+          cat > .sbh-ci/Dockerfile <<'DOCKER'
+          FROM ubuntu:24.04
+          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends strace coreutils ca-certificates && rm -rf /var/lib/apt/lists/*
+          COPY sbh /usr/local/bin/sbh
+          USER 65534:65534
+          ENTRYPOINT ["/usr/bin/strace"]
+          DOCKER
+          cp target/release/sbh .sbh-ci/sbh
+          docker build --tag sbh-ci-observe:local .sbh-ci
+      - name: Run SBH daemon in disposable container, trace syscalls
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges \
+            --pids-limit 64 --memory 768m --cpus 1 \
+            --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=64m \
+            --mount "type=bind,src=$PWD/.sbh-ci/fixtures,dst=/fixtures" \
+            --mount "type=bind,src=$PWD/.sbh-ci/config.toml,dst=/config/config.toml,readonly" \
+            --mount "type=bind,src=$PWD/.sbh-ci/out,dst=/out" \
+            --env HOME=/tmp --env SBH_CONFIG=/config/config.toml \
+            --entrypoint /usr/bin/timeout sbh-ci-observe:local \
+            15s /usr/bin/strace -ff -qq -o /out/trace -e trace=file,process \
+            /usr/local/bin/sbh daemon > .sbh-ci/daemon.log 2>&1 || rc=$?
+          rc=${rc:-0}
+          cat .sbh-ci/daemon.log
+          echo "DAEMON_EXIT=$rc"
+          test "$rc" -eq 124 || { echo "FAIL: daemon did not remain running until timeout"; exit 1; }
+          test -n "$(find .sbh-ci/out -name 'trace*' -type f -print -quit)"
+      - name: Assert protected and other fixtures were untouched; inspect trace
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find .sbh-ci/fixtures -printf '%P|%y|%l\n' | LC_ALL=C sort > .sbh-ci/after-tree.txt
+          find .sbh-ci/fixtures -type f -print0 | sort -z | xargs -0 sha256sum > .sbh-ci/after-hashes.txt
+          diff -u .sbh-ci/before-tree.txt .sbh-ci/after-tree.txt
+          diff -u .sbh-ci/before-hashes.txt .sbh-ci/after-hashes.txt
+          if grep -Eh '(unlink|unlinkat|rename|renameat|rmdir|truncate|ftruncate|fallocate)\(' .sbh-ci/out/trace* | grep -qE '"/fixtures(/|")'; then
+            echo "FAIL: mutation syscall targeted fixture"; exit 1
+          fi
+          if grep -Eh '(open|openat|openat2)\(' .sbh-ci/out/trace* | grep -E '"/fixtures/' | grep -Eq '(O_WRONLY|O_RDWR|O_CREAT|O_TRUNC)'; then
+            echo "FAIL: write-intent open targeted fixture"; exit 1
+          fi
+          echo "Fixture tree and file content unchanged. No traced mutation on fixtures."
+          echo "NOTE: daemon internal state/log writes under ephemeral /tmp are permitted."
